@@ -177,25 +177,23 @@
 
         let scene, camera, renderer, controls, clock;
         let composer, bloomPass; 
-
         let particlesGeometry, particlesMaterial, particleSystem;
         let currentPositions, sourcePositions, targetPositions, swarmPositions; 
         let particleSizes, particleOpacities, particleEffectStrengths; 
-        let noise3D, noise4D; 
-
+        let simplex3D, simplex4D;
         let morphTimeline = null; 
         let isInitialized = false;
         let isMorphing = false;
 
         const CONFIG = {
-            particleCount: 15000,
+            particleCount: 8000, // 减少粒子数量以提高性能
             shapeSize: 14,
             swarmDistanceFactor: 1.5,
             swirlFactor: 4.0,
             noiseFrequency: 0.1,
             noiseTimeScale: 0.04,
             noiseMaxStrength: 2.8,
-            colorScheme: 'fire',
+            colorScheme: 'neon', // 默认使用霓虹主题
             morphDuration: 4000,
             particleSizeRange: [0.08, 0.25],
             starCount: 18000,
@@ -363,8 +361,8 @@
             }
 
             clock = new THREE.Clock();
-            noise3D = createNoise3D(() => Math.random());
-            noise4D = createNoise4D(() => Math.random());
+            simplex3D = createNoise3D();
+            simplex4D = createNoise4D();
             scene = new THREE.Scene();
             scene.fog = new THREE.FogExp2(0x000308, 0.03);
             updateProgress(5);
@@ -413,9 +411,18 @@
             document.querySelector(`.color-option[data-scheme="${CONFIG.colorScheme}"]`).classList.add('active');
             updateProgress(15);
 
-            isInitialized = true;
+            // 设置默认形状为球体
+            setShape('sphere');
+            
+            // 自动开始动画
             animate();
-            console.log("Initialization complete.");
+            
+            // 隐藏加载界面
+            const loading = document.getElementById('loading');
+            loading.style.opacity = '0';
+            setTimeout(() => {
+                loading.style.display = 'none';
+            }, 600);
         }
 
         function setupPostProcessing() {
@@ -560,7 +567,7 @@
                 } else {
                     hue = THREE.MathUtils.mapLinear( dist, 0, maxRadius, colorScheme.startHue, colorScheme.endHue );
                 }
-                const noiseValue = (noise3D(tempVec.x * 0.2, tempVec.y * 0.2, tempVec.z * 0.2) + 1) * 0.5;
+                const noiseValue = (simplex3D(tempVec.x * 0.2, tempVec.y * 0.2, tempVec.z * 0.2) + 1) * 0.5;
                 const saturation = THREE.MathUtils.clamp(colorScheme.saturation * (0.9 + noiseValue * 0.2), 0, 1);
                 const lightness = THREE.MathUtils.clamp(colorScheme.lightness * (0.85 + noiseValue * 0.3), 0.1, 0.9);
                 const color = new THREE.Color().setHSL(hue / 360, saturation, lightness);
@@ -587,7 +594,7 @@
                 const i3 = i * 3;
                 sourceVec.fromArray(sourcePositions, i3); targetVec.fromArray(nextTargetPositions, i3);
                 swarmVec.lerpVectors(sourceVec, targetVec, 0.5);
-                const offsetDir = tempVec.set( noise3D(i * 0.05, 10, 10), noise3D(20, i * 0.05, 20), noise3D(30, 30, i * 0.05) ).normalize();
+                const offsetDir = tempVec.set( simplex3D(i * 0.05, 10, 10), simplex3D(20, i * 0.05, 20), simplex3D(30, 30, i * 0.05) ).normalize();
                 const distFactor = sourceVec.distanceTo(targetVec) * 0.1 + centerOffsetAmount;
                 swarmVec.addScaledVector(offsetDir, distFactor * (0.5 + Math.random() * 0.8));
                 swarmPositions[i3] = swarmVec.x; swarmPositions[i3 + 1] = swarmVec.y; swarmPositions[i3 + 2] = swarmVec.z;
@@ -614,30 +621,38 @@
 
         function animate() {
             requestAnimationFrame(animate);
+            
             if (!isInitialized) return;
-            const elapsedTime = clock.getElapsedTime();
-            const deltaTime = clock.getDelta();
-            controls.update();
+            
+            const time = clock.getElapsedTime();
+            
+            // 更新粒子位置
+            updateParticles(time);
+            
+            // 渲染场景
+            composer.render();
+        }
+
+        function updateParticles(time) {
             const positions = particlesGeometry.attributes.position.array;
             const effectStrengths = particlesGeometry.attributes.aEffectStrength.array;
 
             if (isMorphing) {
-                updateMorphAnimation(positions, effectStrengths, elapsedTime, deltaTime);
+                updateMorphAnimation(positions, effectStrengths, time);
             } else {
-                updateIdleAnimation(positions, effectStrengths, elapsedTime, deltaTime);
+                updateIdleAnimation(positions, effectStrengths, time);
             }
             particlesGeometry.attributes.position.needsUpdate = true;
             if (isMorphing || particlesGeometry.attributes.aEffectStrength.needsUpdate) {
                  particlesGeometry.attributes.aEffectStrength.needsUpdate = true;
             }
-            composer.render(deltaTime);
         }
 
-        function updateMorphAnimation(positions, effectStrengths, elapsedTime, deltaTime) {
+        function updateMorphAnimation(positions, effectStrengths, time) {
             const t = morphState.progress;
             const targets = targetPositions[currentShapeIndex];
             const effectStrength = Math.sin(t * Math.PI);
-            const currentSwirl = effectStrength * CONFIG.swirlFactor * deltaTime * 50;
+            const currentSwirl = effectStrength * CONFIG.swirlFactor * time * 50;
             const currentNoise = effectStrength * CONFIG.noiseMaxStrength;
 
             for (let i = 0; i < CONFIG.particleCount; i++) {
@@ -653,14 +668,14 @@
 
                 if (currentSwirl > 0.01) {
                     tempVec.subVectors(bezPos, sourceVec);
-                    swirlAxis.set( noise3D(i * 0.02, elapsedTime * 0.1, 0), noise3D(0, i * 0.02, elapsedTime * 0.1 + 5), noise3D(elapsedTime * 0.1 + 10, 0, i * 0.02) ).normalize();
+                    swirlAxis.set( simplex3D(i * 0.02, time * 0.1, 0), simplex3D(0, i * 0.02, time * 0.1 + 5), simplex3D(time * 0.1 + 10, 0, i * 0.02) ).normalize();
                     tempVec.applyAxisAngle(swirlAxis, currentSwirl * (0.5 + Math.random() * 0.5));
                     bezPos.copy(sourceVec).add(tempVec);
                 }
 
                 if (currentNoise > 0.01) {
-                    const noiseTime = elapsedTime * CONFIG.noiseTimeScale;
-                    noiseOffset.set( noise4D(bezPos.x * CONFIG.noiseFrequency, bezPos.y * CONFIG.noiseFrequency, bezPos.z * CONFIG.noiseFrequency, noiseTime), noise4D(bezPos.x * CONFIG.noiseFrequency + 100, bezPos.y * CONFIG.noiseFrequency + 100, bezPos.z * CONFIG.noiseFrequency + 100, noiseTime), noise4D(bezPos.x * CONFIG.noiseFrequency + 200, bezPos.y * CONFIG.noiseFrequency + 200, bezPos.z * CONFIG.noiseFrequency + 200, noiseTime) );
+                    const noiseTime = time * CONFIG.noiseTimeScale;
+                    noiseOffset.set( simplex4D(bezPos.x * CONFIG.noiseFrequency, bezPos.y * CONFIG.noiseFrequency, bezPos.z * CONFIG.noiseFrequency, noiseTime), simplex4D(bezPos.x * CONFIG.noiseFrequency + 100, bezPos.y * CONFIG.noiseFrequency + 100, bezPos.z * CONFIG.noiseFrequency + 100, noiseTime), simplex4D(bezPos.x * CONFIG.noiseFrequency + 200, bezPos.y * CONFIG.noiseFrequency + 200, bezPos.z * CONFIG.noiseFrequency + 200, noiseTime) );
                     bezPos.addScaledVector(noiseOffset, currentNoise);
                 }
 
@@ -673,9 +688,8 @@
              particlesGeometry.attributes.aEffectStrength.needsUpdate = true;
         }
 
-        function updateIdleAnimation(positions, effectStrengths, elapsedTime, deltaTime) {
-            const breathScale = 1.0 + Math.sin(elapsedTime * 0.5) * 0.015;
-            const timeScaled = elapsedTime * CONFIG.idleFlowSpeed;
+        function updateIdleAnimation(positions, effectStrengths, time) {
+            const breathScale = 1.0 + Math.sin(time * 0.5) * 0.015;
             const freq = 0.1;
 
             let needsEffectStrengthReset = false;
@@ -684,7 +698,7 @@
                 const i3 = i * 3;
                 sourceVec.fromArray(sourcePositions, i3);
                 tempVec.copy(sourceVec).multiplyScalar(breathScale);
-                flowVec.set( noise4D(tempVec.x * freq, tempVec.y * freq, tempVec.z * freq, timeScaled), noise4D(tempVec.x * freq + 10, tempVec.y * freq + 10, tempVec.z * freq + 10, timeScaled), noise4D(tempVec.x * freq + 20, tempVec.y * freq + 20, tempVec.z * freq + 20, timeScaled) );
+                flowVec.set( simplex4D(tempVec.x * freq, tempVec.y * freq, tempVec.z * freq, time), simplex4D(tempVec.x * freq + 10, tempVec.y * freq + 10, tempVec.z * freq + 10, time), simplex4D(tempVec.x * freq + 20, tempVec.y * freq + 20, tempVec.z * freq + 20, time) );
                 tempVec.addScaledVector(flowVec, CONFIG.idleFlowStrength);
                 currentVec.fromArray(positions, i3);
                 currentVec.lerp(tempVec, 0.05);
@@ -714,8 +728,20 @@
             composer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        init();
+        function setShape(shapeName) {
+            currentShapeIndex = SHAPES.findIndex(shape => shape.name === shapeName);
+            if (currentShapeIndex !== -1) {
+                targetPositions = SHAPES.map(shape => shape.generator(CONFIG.particleCount, CONFIG.shapeSize));
+                currentPositions = new Float32Array(targetPositions[currentShapeIndex]);
+                sourcePositions = new Float32Array(targetPositions[currentShapeIndex]);
+                swarmPositions = new Float32Array(CONFIG.particleCount * 3);
+                particlesGeometry.attributes.position.array = currentPositions;
+                particlesGeometry.attributes.position.needsUpdate = true;
+                updateColors();
+            }
+        }
 
+        init();
     </script>
 </body>
 </html> 
